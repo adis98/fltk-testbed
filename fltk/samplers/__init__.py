@@ -5,6 +5,10 @@ from .q_sampler import Probability_q_Sampler
 from .dirichlet import DirichletSampler
 from .limit_labels import LimitLabelsSampler
 from .limit_labels_flex import LimitLabelsSamplerFlex
+from .balanced import BalancedSampler
+from .column import ColumnSampler
+from .shuffled import ShuffledSampler
+from .unique import UniqueSampler
 from ..util.config.definitions import DataSampler
 from ..util.log import getLogger
 
@@ -44,6 +48,17 @@ def get_sampler(dataset, args):
         elif method == DataSampler.dirichlet:
             sampler = DirichletSampler(dataset, num_replicas=args.get_world_size(), rank=args.get_rank(),
                                        args=args.get_sampler_args())
+
+        # Samplers for Continual learning
+        elif method == DataSampler.balanced:
+            sampler = BalancedSampler(dataset, num_replicas=args.get_world_size(), rank=args.get_rank(), args=args.get_sampler_args())
+        elif method == DataSampler.column:
+            sampler = ColumnSampler(dataset, num_replicas=args.get_world_size(), rank=args.get_rank(), args=args.get_sampler_args())
+        elif method == DataSampler.shuffled:
+            sampler = ShuffledSampler(dataset, num_replicas=args.get_world_size(), rank=args.get_rank(), args=args.get_sampler_args())
+        elif method == DataSampler.unique:
+            sampler = UniqueSampler(dataset, num_replicas=args.get_world_size(), rank=args.get_rank(), args=args.get_sampler_args())
+
         else:  # default
             msg = f"Unknown sampler {method}, using uniform instead"
             logger.warning(msg)

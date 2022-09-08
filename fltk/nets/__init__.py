@@ -12,6 +12,8 @@ from .fashion_mnist_cnn import FashionMNISTCNN
 from .fashion_mnist_resnet import FashionMNISTResNet
 from .mnist_cnn import MNIST_CNN
 from .reddit_lstm import RNNModel
+from .cifar_100_lenet import Cifar100LeNet
+from .cifar_100_lenetweit import Cifar100LeNetWEIT
 from .simple import SimpleMnist, SimpleNet
 
 
@@ -29,6 +31,8 @@ def _available_nets() -> Dict[Nets, Type[torch.nn.Module]]:
         Nets.fashion_mnist_cnn: FashionMNISTCNN,
         Nets.fashion_mnist_resnet: FashionMNISTResNet,
         Nets.mnist_cnn: MNIST_CNN,
+        Nets.cifar100_lenet: Cifar100LeNet,
+        Nets.cifar100_lenetweit: Cifar100LeNetWEIT,
     }
 
 

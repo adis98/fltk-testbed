@@ -1,18 +1,13 @@
-from __future__ import annotations
 import logging
 from collections import OrderedDict
 from pathlib import Path
-from typing import Union, Type
+from typing import Union
 
-import deprecate
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
+from fltk.util.config import DistributedConfig
 from fltk.util.results import EpochData
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from fltk.util.config import DistributedConfig
 
 
 def flatten_params(model_description: Union[torch.nn.Module, OrderedDict]):
@@ -26,15 +21,16 @@ def flatten_params(model_description: Union[torch.nn.Module, OrderedDict]):
         parameters = model_description.parameters()
     else:
         parameters = model_description.values()
-    parameter_list = [torch.flatten(p) for p in parameters]  # pylint: disable=no-member
-    flat_params = torch.cat(parameter_list).view(-1, 1)  # pylint: disable=no-member
+    parameter_list = [torch.flatten(p) for p in parameters] # pylint: disable=no-member
+    flat_params = torch.cat(parameter_list).view(-1, 1) # pylint: disable=no-member
     return flat_params
 
 
-def recover_flattened(flat_params: torch.Tensor, model: torch.nn.Module):
+def recover_flattened(flat_params, model):
     """
     Gives a list of recovered parameters from their flattened form
     :param flat_params: [#params, 1]
+    :param indices: a list detaling the start and end index of each param [(start, end) for param]
     :param model: the model that gives the params with correct shapes
     :return: the params, reshaped to the ones in the model, with the same order as those in the model
     """
@@ -50,14 +46,14 @@ def recover_flattened(flat_params: torch.Tensor, model: torch.nn.Module):
     return recovered_params
 
 
-def initialize_default_model(conf: DistributedConfig, model_class: Type[torch.nn.Module]) -> torch.nn.Module:
+def initialize_default_model(conf: DistributedConfig, model_class) -> torch.nn.Module:
     """
     Load a default model dictionary into a torch model.
-    @param conf: Distributed configuration (cluster configuration.
-    @type conf: DistributedConfig
-    @param model_class: Reference to class implementing the model to be loaded.
-    @type model_class: Type[torch.nn.Module]
-    @return: M
+    @param model:
+    @type model:
+    @param conf:
+    @type conf:
+    @return:
     @rtype:
     """
     model = model_class()
@@ -69,7 +65,7 @@ def initialize_default_model(conf: DistributedConfig, model_class: Type[torch.nn
 def load_model_from_file(model: torch.nn.Module, model_file_path: Path) -> None:
     """
     Function to load a PyTorch state_dict model file into a network instance, inplace. This requires the model
-    file to be of the same type.
+    file to be of the same type type.
 
     @param model: Instantiated PyTorch module corresponding to the to be loaded network.
     @type model: torch.nn.Module
@@ -83,7 +79,7 @@ def load_model_from_file(model: torch.nn.Module, model_file_path: Path) -> None:
     if model_file_path.is_file():
         try:
             model.load_state_dict(torch.load(model_file_path))
-        except Exception:  # pylint: disable=broad-except
+        except Exception: # pylint: disable=broad-except
             logging.warning("Couldn't load model. Attempting to map CUDA tensors to CPU to solve error.")
     else:
         logging.warning(f'Could not find model: {model_file_path}')
@@ -114,8 +110,7 @@ def test_model(model, epoch, writer: SummaryWriter = None) -> EpochData:
                      loss=loss,
                      class_precision=class_precision,
                      class_recall=class_recall,
-                     confusion_mat=None,
-                     num_epochs=0)
+                     client_id='federator')
     if writer:
         writer.add_scalar('accuracy per epoch', accuracy, epoch)
     return data

@@ -1,19 +1,8 @@
-from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, List
-
+from typing import Optional
 from dataclasses_json import config, dataclass_json
-
-from fltk.util.config.definitions import OrchestratorType
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from fltk.util.config import DistLearningConfig
-
-
 @dataclass_json
 @dataclass
 class GeneralNetConfig:
@@ -28,10 +17,8 @@ class GeneralNetConfig:
 @dataclass_json
 @dataclass(frozen=True)
 class ReproducibilityConfig:
-    """
-    Dataclass object to hold experiment configuration settings related to reproducibility of experiments.
-    """
-    seeds: List[int]
+    torch_seed: int
+    arrival_seed: int
 
 
 @dataclass_json
@@ -77,7 +64,8 @@ class ExecutionConfig:
 @dataclass_json
 @dataclass
 class OrchestratorConfig:
-    orchestrator_type: OrchestratorType
+    service: str
+    nic: str
 
 
 @dataclass_json
@@ -92,12 +80,13 @@ class ClientConfig:
 class ClusterConfig:
     orchestrator: OrchestratorConfig
     client: ClientConfig
+    wait_for_clients: bool = True
     namespace: str = 'test'
     image: str = 'fltk:latest'
 
     def load_incluster_namespace(self):
         """
-        Function to retrieve information from teh cluster itself provided by K8s.
+        Function to retreive information from teh cluster itself provided by K8s.
         @return: None
         @rtype: None
         """
@@ -123,7 +112,7 @@ class ClusterConfig:
 
 @dataclass_json
 @dataclass
-class DistributedConfig:
+class DistributedConfig():
     """
     Configuration Dataclass for shared configurations between experiments. This regards your general setup, describing
     elements like the utilization of CUDA accelerators, format of logging file names, whether to save experiment data
@@ -149,7 +138,7 @@ class DistributedConfig:
         """
         return self.execution_config.log_path
 
-    def get_log_path(self, experiment_id: str, client_id: int, learn_params: DistLearningConfig) -> Path:
+    def get_log_path(self, experiment_id: str, client_id: int, network_name: str) -> Path:
         """
         Function to get the logging path that corresponds to a specific experiment, client and network that has been
         deployed as learning task.
@@ -163,8 +152,7 @@ class DistributedConfig:
         @rtype: Path
         """
         base_log = Path(self.execution_config.tensorboard.record_dir)
-        model, dataset, replication = learn_params.model, learn_params.dataset, learn_params.replication
-        experiment_dir = Path(f"{replication}/{self.execution_config.experiment_prefix}_{experiment_id}/{client_id}/{model}_{dataset}")
+        experiment_dir = Path(f"{self.execution_config.experiment_prefix}_{client_id}_{network_name}_{experiment_id}")
         return base_log.joinpath(experiment_dir)
 
     def get_data_path(self) -> Path:

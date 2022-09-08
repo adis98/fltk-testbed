@@ -1,11 +1,11 @@
-replication: -1
-batch_size: 1
-test_batch_size: 1
+batch_size: 128
+test_batch_size: 128
 cuda: false
+num_clients: 2
 scheduler_step_size: 500
 scheduler_gamma: 0.2
-rounds: 1
-epochs: 2500
+rounds: 4
+epochs: 2
 lr: 0.05
 momentum: 0.011
 shuffle: True
@@ -15,14 +15,23 @@ rng_seed: 430
 optimizer: SGD
 optimizer_args: {'lr': 0.01, 'momentum': 0.0001}
 loss_function: CrossEntropyLoss
-clients_per_round: 1
+clients_per_round: 2
 distributed: true
-single_machine: false
-aggregation: Sum
-dataset_name: mnist
-net_name: FashionMNISTCNN
-data_sampler: uniform
-data_sampler_args: [0.07, 42]
-real_time: true
+single_machine: true
+aggregation: FedAvg
+dataset_name: cifar100
+net_name: Cifar100LeNetWEIT
+data_sampler: balanced
+data_sampler_args: [42, 10]
+real_time: false
 save_data_append: true
 replication_id: 4
+continual: true
+task_cnt: 2
+rounds_per_task: 2
+output_window_type: "full"
+classes_per_task: 5
+lambda_l2: 1
+lambda_l1: 0.001
+weight_decay: 0.0001
+lambda_mask: 0

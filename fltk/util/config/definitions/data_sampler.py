@@ -11,3 +11,7 @@ class DataSampler(Enum):
     emd_sampler = 'emd sampler'
     limit_labels_flex = "limit labels flex"
     n_labels = "n labels"
+    balanced = "balanced"
+    shuffled = "shuffled"
+    unique = "unique"
+    column = "column"

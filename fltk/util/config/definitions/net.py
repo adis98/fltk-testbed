@@ -9,6 +9,8 @@ class Nets(Enum):
     fashion_mnist_cnn = "FashionMNISTCNN"
     fashion_mnist_resnet = "FashionMNISTResNet"
     mnist_cnn = 'MNISTCNN'
+    cifar100_lenet = 'Cifar100LeNet'
+    cifar100_lenetweit = 'Cifar100LeNetWEIT'
 
     @classmethod
     def _missing_name_(cls, name: str):

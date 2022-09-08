@@ -1,19 +1,15 @@
-from __future__ import annotations
-
 import abc
 import copy
 import os
-from typing import Callable, Any, Union
+from typing import Callable, Any
 import torch
 from torch.distributed import rpc
-from fltk.datasets.federated import get_fed_dataset
+
+import fltk.nets.cifar_100_lenet
+from fltk.datasets.loader_util import get_dataset
 from fltk.nets import get_net
-from typing import TYPE_CHECKING
-
+from fltk.util.config import FedLearningConfig
 from fltk.util.log import getLogger
-
-if TYPE_CHECKING:
-    from fltk.util.config import FedLearningConfig
 
 # Global dictionary to enable peer to peer communication between clients
 global_vars = {}
@@ -31,14 +27,14 @@ class Node(abc.ABC):
     distributed: bool = True
     cuda: bool = False
     finished_init: bool = False
-    device = torch.device("cpu") # pylint: disable=no-member
+    device = torch.device("cpu")  # pylint: disable=no-member
     net: Any
     dataset: Any
     logger = getLogger(__name__)
 
     def __init__(self, identifier: str, rank: int, world_size: int, config: FedLearningConfig):
         self.config = config
-        self.id = identifier # pylint: disable=invalid-name
+        self.id = identifier  # pylint: disable=invalid-name
         self.rank = rank
         self.world_size = world_size
         self.real_time = config.real_time
@@ -67,7 +63,7 @@ class Node(abc.ABC):
         if world_size:
             config.world_size = world_size
         self.logger.info(f'world size = {config.world_size} with rank={config.rank}')
-        self.dataset = get_fed_dataset(config.dataset_name)(config)
+        self.dataset = get_dataset(config.dataset_name)(config)
         self.finished_init = True
         self.logger.info('Done with init')
 
@@ -85,7 +81,7 @@ class Node(abc.ABC):
         Communication utility function.
         This is the entry points for all incoming RPC communication.
         The class object (self) will be loaded from the global space
-        and the callable method is executed within the context of self.
+        and the callable method is executed within the context of self
         :param method: Function to execute provided by remote client.
         :param sender: Name of other Client that has request a function to be called.
         :param args: Arguments to pass to function to execute.
@@ -111,10 +107,10 @@ class Node(abc.ABC):
             self.logger.warning('Unable to configure device for GPU because cuda.is_available() == False')
         if self.cuda and torch.cuda.is_available():
             self.logger.info("Configure device for GPU (Cuda)")
-            return torch.device("cuda:0") # pylint: disable=no-member
+            return torch.device("cuda:0")  # pylint: disable=no-member
 
         self.logger.info("Configure device for CPU")
-        return torch.device("cpu") # pylint: disable=no-member
+        return torch.device("cpu")  # pylint: disable=no-member
 
     def set_net(self, net):
         """
@@ -147,7 +143,13 @@ class Node(abc.ABC):
         :param model_file_path: string
         """
         model_class = get_net(self.config.net_name)
-        model = model_class()
+        if model_class == fltk.nets.cifar_100_lenet.Cifar100LeNet or model_class == fltk.nets.cifar_100_lenetweit.Cifar100LeNetWEIT:
+            if self.config.continual:
+                model = model_class([3, 32, 32], window=self.config.output_window_type)  # cifar 100's input size
+            else:
+                model = model_class([3, 32, 32], window="full")  # use a full window if not doing continual learning
+        else:
+            model = model_class()
 
         if os.path.exists(model_file_path):
             try:
@@ -160,8 +162,7 @@ class Node(abc.ABC):
             self.logger.warning(f"Could not find model: {model_file_path}")
         return model
 
-
-    def update_nn_parameters(self, new_params, is_offloaded_model = False):
+    def update_nn_parameters(self, new_params, is_offloaded_model=False):
         """
         Update the NN's parameters.
 
@@ -174,7 +175,7 @@ class Node(abc.ABC):
         else:
             self.net.load_state_dict(copy.deepcopy(new_params), strict=True)
 
-    def message(self, other_node: str, method: Union[Callable, str], *args, **kwargs) -> torch.Future: # pylint: disable=no-member
+    def message(self, other_node: str, method: Callable, *args, **kwargs) -> torch.Future:  # pylint: disable=no-member
         """
         All communication with other nodes should go through this method.
         The attribute real_time determines if the communication should use RPC or if it is a direct object call.
@@ -183,10 +184,11 @@ class Node(abc.ABC):
         if self.real_time:
             func = Node._receive
             args_list = [method, self.id] + list(args)
-            return rpc.rpc_sync(other_node, func, args=args_list,  kwargs=kwargs)
+            return rpc.rpc_sync(other_node, func, args=args_list, kwargs=kwargs)
         return method(other_node, *args, **kwargs)
 
-    def message_async(self, other_node: str, method: Union[Callable, str], *args, **kwargs) -> torch.Future: # pylint: disable=no-member
+    def message_async(self, other_node: str, method: Callable, *args,
+                      **kwargs) -> torch.Future:  # pylint: disable=no-member
         """
         This is the async version of 'message'.
         All communication with other nodes should go through this method.
@@ -196,7 +198,7 @@ class Node(abc.ABC):
         if self.real_time:
             func = Node._receive
             args_list = [method, self.id] + list(args)
-            return rpc.rpc_async(other_node, func, args=args_list,  kwargs=kwargs)
+            return rpc.rpc_async(other_node, func, args=args_list, kwargs=kwargs)
         # Wrap inside a future to keep the logic the same
         future = torch.futures.Future()
         future.set_result(method(other_node, *args, **kwargs))

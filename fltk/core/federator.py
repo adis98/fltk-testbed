@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 import copy
+
 import numpy as np
 import sklearn
 import time
@@ -14,13 +13,9 @@ from fltk.core.client import Client
 from fltk.core.node import Node
 from fltk.strategy import get_aggregation
 from fltk.strategy import random_selection
-
+from fltk.util.config import FedLearningConfig
 from fltk.util.data_container import DataContainer, FederatorRecord, ClientRecord
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from fltk.util.config import FedLearningConfig
 NodeReference = Union[Node, str]
 
 
@@ -73,6 +68,9 @@ class Federator(Node):
         config.output_path = Path(config.output_path) / f'{config.experiment_prefix}{prefix_text}'
         self.exp_data = DataContainer('federator', config.output_path, FederatorRecord, config.save_data_append)
         self.aggregation_method = get_aggregation(config.aggregation)
+
+        #continual learning configs
+        self.continual = config.continual
 
     def create_clients(self):
         """
@@ -276,10 +274,12 @@ class Federator(Node):
 
         # Client training
         training_futures: List[torch.Future] = []  # pylint: disable=no-member
-
-        def training_cb(fut: torch.Future, client_ref: LocalClient, client_weights, client_sizes, num_epochs):  # pylint: disable=no-member
+        avg_of_avg_accuracies = []
+        def training_cb(fut: torch.Future, client_ref: LocalClient, client_weights, client_sizes,
+                        num_epochs):  # pylint: disable=no-member
             train_loss, weights, accuracy, test_loss, round_duration, train_duration, test_duration, c_mat = fut.wait()
             self.logger.info(f'Training callback for client {client_ref.name} with accuracy={accuracy}')
+            avg_of_avg_accuracies.append(accuracy)
             client_weights[client_ref.name] = weights
             client_data_size = self.message(client_ref.ref, Client.get_client_datasize)
             client_sizes[client_ref.name] = client_data_size
@@ -306,13 +306,15 @@ class Federator(Node):
 
         updated_model = self.aggregation_method(client_weights, client_sizes)
         self.update_nn_parameters(updated_model)
+        self.logger.info(f'Avg of avg accuracies across clients={sum(avg_of_avg_accuracies)/len(avg_of_avg_accuracies)}')
+        avg_of_avg_accuracies = []
+        if not self.continual: # because continual learning is evaluated on the client-side for now.
+            test_accuracy, test_loss, conf_mat = self.test(self.net)
+            self.logger.info(f'[Round {com_round_id:>3}] Federator has a accuracy of {test_accuracy} and loss={test_loss}')
 
-        test_accuracy, test_loss, conf_mat = self.test(self.net)
-        self.logger.info(f'[Round {com_round_id:>3}] Federator has a accuracy of {test_accuracy} and loss={test_loss}')
-
-        end_time = time.time()
-        duration = end_time - start_time
-        record = FederatorRecord(len(selected_clients), com_round_id, duration, test_loss, test_accuracy,
-                                 confusion_matrix=conf_mat)
-        self.exp_data.append(record)
-        self.logger.info(f'[Round {com_round_id:>3}] Round duration is {duration} seconds')
+            end_time = time.time()
+            duration = end_time - start_time
+            record = FederatorRecord(len(selected_clients), com_round_id, duration, test_loss, test_accuracy,
+                                     confusion_matrix=conf_mat)
+            self.exp_data.append(record)
+            self.logger.info(f'[Round {com_round_id:>3}] Round duration is {duration} seconds')

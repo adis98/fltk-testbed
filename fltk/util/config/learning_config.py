@@ -2,7 +2,6 @@
 from dataclasses import dataclass, field
 from logging import getLogger
 from pathlib import Path
-# noinspection PyUnresolvedReferences
 from typing import Type, List, Dict, Any, T, Union
 
 import re
@@ -15,9 +14,12 @@ from dataclasses_json import config, dataclass_json
 # noinspection PyProtectedMember
 from torch.nn.modules.loss import _Loss
 
-from fltk.util.config.definitions import (DataSampler, Loss, Aggregations, Dataset, LogLevel, Nets,
-                                          Optimizations)
-from fltk.util.config.definitions.loss import get_loss_function
+from fltk.util.config.definitions import DataSampler, Loss, get_loss_function
+from fltk.util.config.definitions.aggregate import Aggregations
+from fltk.util.config.definitions.dataset import Dataset
+from fltk.util.config.definitions.logging import LogLevel
+from fltk.util.config.definitions.net import Nets
+from fltk.util.config.definitions.optim import Optimizations
 
 
 def _eval_decoder(obj: Union[str, T]) -> Union[Any, T]:
@@ -31,11 +33,11 @@ def _eval_decoder(obj: Union[str, T]) -> Union[Any, T]:
     return obj
 
 
-def get_safe_loader() -> Type[yaml.SafeLoader]:
+def get_safe_loader() -> yaml.SafeLoader:
     """
     Function to get a yaml SafeLoader that is capable of properly parsing yaml compatible floats.
 
-    The default yaml loader would parse a value such as `1e-10` as a string, rather than a float.
+    By default otherwise loading a value such as `1e-10` will result in in being parsed as a string.
 
     @return: SafeLoader capable of parsing scientificly notated yaml values.
     @rtype: yaml.SafeLoader
@@ -44,15 +46,15 @@ def get_safe_loader() -> Type[yaml.SafeLoader]:
     # Credits to https://stackoverflow.com/a/30462009/14661801
     safe_loader = yaml.SafeLoader
     safe_loader.add_implicit_resolver(
-            u'tag:yaml.org,2002:float',
-            re.compile(u'''^(?:
+        u'tag:yaml.org,2002:float',
+        re.compile(u'''^(?:
              [-+]?(?:[0-9][0-9_]*)\\.[0-9_]*(?:[eE][-+]?[0-9]+)?
             |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
             |\\.[0-9_]+(?:[eE][-+][0-9]+)?
             |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\\.[0-9_]*
             |[-+]?\\.(?:inf|Inf|INF)
             |\\.(?:nan|NaN|NAN))$''', re.X),
-            list(u'-+0123456789.'))
+        list(u'-+0123456789.'))
     return safe_loader
 
 
@@ -60,7 +62,6 @@ def get_safe_loader() -> Type[yaml.SafeLoader]:
 @dataclass_json
 @dataclass
 class LearningConfig:
-    replication: int = field(metadata=dict(required=False, missing=-1))
     batch_size: int = field(metadata=dict(required=False, missing=128))
     test_batch_size: int = field(metadata=dict(required=False, missing=128))
     cuda: bool = field(metadata=dict(required=False, missing=False))
@@ -92,7 +93,8 @@ class FedLearningConfig(LearningConfig):
     # Enum
     log_level: LogLevel = LogLevel.DEBUG
 
-    num_clients: int = 10
+    # num_clients: int = 10
+    num_clients: int = 2
     clients_per_round: int = 2
     distributed: bool = True
     single_machine: bool = False
@@ -121,6 +123,18 @@ class FedLearningConfig(LearningConfig):
     # This could be useful when a system is likely to crash midway an experiment
     save_data_append: bool = False
     output_path: Path = field(metadata=config(encoder=str, decoder=Path), default=Path('logging'))
+
+    # Use this when training for continual learning.
+    # Task count factor is ignored if set to false
+    continual: bool = False
+    task_cnt: int = 0
+    rounds_per_task: int = 1
+    output_window_type: str = "full"
+    classes_per_task: int = 5
+    lambda_l2: float = 1
+    lambda_l1: float = 0.001
+    weight_decay: float = 0.0001
+    lambda_mask: float = 0
 
     def update_rng_seed(self):
         torch.manual_seed(self.rng_seed)
@@ -167,9 +181,16 @@ class FedLearningConfig(LearningConfig):
         """
         getLogger(__name__).debug(f'Loading yaml from {path.absolute()}')
         safe_loader = get_safe_loader()
-        with open(path) as file:
-            content = yaml.load(file, Loader=safe_loader)
-            conf = FedLearningConfig.from_dict(content)
+        try:
+            with open(path) as file:
+                content = yaml.load(file, Loader=safe_loader)
+                conf = FedLearningConfig.from_dict(content)
+        except FileNotFoundError:
+            path_ = "..\\" + str(path)
+            with open(path_) as file:
+                content = yaml.load(file, Loader=safe_loader)
+                conf = FedLearningConfig.from_dict(content)
+
         return conf
 
 
@@ -189,7 +210,7 @@ class DistLearningConfig(LearningConfig):  # pylint: disable=too-many-instance-a
     loss: Loss = Loss.cross_entropy_loss
 
     @staticmethod
-    def from_yaml(path: Path) -> "DistLearningConfig":
+    def from_yaml(path: Path):
         """
         Parse yaml file to dataclass. Re-implemented to rely on dataclasses_json to load data with tested library.
 
@@ -210,7 +231,6 @@ class DistLearningConfig(LearningConfig):  # pylint: disable=too-many-instance-a
             content = yaml.load(file, Loader=safe_loader)
             conf = DistLearningConfig.from_dict(content)
         return conf
-
 
     def get_loss_function(self) -> Type[_Loss]:
         """
