@@ -60,7 +60,16 @@ extension of the project is planned to implement a `FederatedClient` that allows
 * The location of devices matters (network latency and bandwidth)
 * Communication can be costly
 
+### Federated Continual Learning
+**General protocol:**
 
+1. Client selection by the Federator.
+2. Selected clients download the model.
+3. Data loader partitions data into a stream of tasks.
+4. At every round, client loads data corresponding to that particular task. Testing is done on all tasks learned so far.
+5. Federator aggregates weights of clients.
+6. Updated model is shared to clients.
+7. Steps 1 to 6 are repeated until all tasks are learned.
 
 
 ### Overview of deployed project
@@ -337,3 +346,36 @@ Which will collect and run all the tests in the repository, and show in `verbose
 
 * Currently, there is no GPU support in the Docker containers, for this the `Dockerfile` will need to be updated to
 accommodate for this.
+
+
+## Instructions to run Federated Continual Learning
+
+1. Inside the fltk directory, run __main__.py with the following parameters:
+```single experiments/test/federated.yaml```
+2. Configuration for the experiment is given in experiments/test/federated.yaml. The parameters along with the default values are explained below:
+
+* batch_size: 128. Batch size for training
+* test_batch_size: 128. Batch size for testing
+* num_clients: 5. Number of clients in the experiment
+* rounds: 100. The total number of rounds to run for. Set this to the product of rounds_per_task and task_cnt
+* epochs: 2. The number of epochs run with each round
+* loss_function: CrossEntropyLoss
+* clients_per_round: 5. Set this to the same value as num_clients! Does not work otherwise
+* single_machine: true
+* aggregation: FedAvg
+* dataset_name: cifar100
+* net_name: Cifar100LeNetWEIT 
+* data_sampler: Select one from (column, balanced, unique, or shuffled).
+* data_sampler_args: [42, 10]. Give a list of two values [seed, num_task]. Example: [42, 10], for seed 42 and 10 tasks per client
+* real_time: false. Avoid using grpc calls locally.
+* save_data_append: true
+* replication_id: 4
+* continual: true. Is continual learning being done?
+* task_cnt: 10. Number of tasks per client. If using unique partition, ensure that num_clients * task_cnt is max 20
+* rounds_per_task: 10. Number of training rounds for each task
+* output_window_type: sliding. Can be sliding, expanding, or full
+* classes_per_task: 5. The number of classes for a task. For cifar100, this is fixed at 5
+* lambda_l2: 1. Hyperparam for WEIT loss term 2
+* lambda_l1: 0.001. Hyperparam for WEIT loss term 1
+* weight_decay: 0.0001
+* lambda_mask: 0. Initial mask used by WEIT algorithm for training. 

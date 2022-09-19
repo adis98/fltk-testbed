@@ -1,21 +1,21 @@
-batch_size: 128
-test_batch_size: 128
+batch_size: 32
+test_batch_size: 32
 cuda: false
-num_clients: 3
+num_clients: 5
 scheduler_step_size: 500
 scheduler_gamma: 0.2
-rounds: 8
+rounds: 100
 epochs: 2
-lr: 0.05
-momentum: 0.011
+lr: 0.01
+momentum: 0.01
 shuffle: True
 log_interval: 20
 min_lr: 2e-10
 rng_seed: 430
 optimizer: SGD
-optimizer_args: {'lr': 0.01, 'momentum': 0.0001}
+optimizer_args: {'lr': 0.01, 'momentum': 0.01}
 loss_function: CrossEntropyLoss
-clients_per_round: 3
+clients_per_round: 5
 distributed: true
 single_machine: true
 aggregation: FedAvg
@@ -27,11 +27,11 @@ real_time: false
 save_data_append: true
 replication_id: 4
 continual: true
-task_cnt: 4
-rounds_per_task: 2
-output_window_type: sliding
+task_cnt: 10
+rounds_per_task: 10
+output_window_type: expanding
 classes_per_task: 5
-lambda_l2: 1
-lambda_l1: 0.001
+lambda_l2: 0.01
+lambda_l1: 0.01
 weight_decay: 0.0001
 lambda_mask: 0

@@ -137,6 +137,7 @@ class Client(Node):
                 else:
                     loss = self.loss_function(outputs, labels)
 
+                self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
                 running_loss += loss.item()
@@ -318,6 +319,7 @@ class Client(Node):
 
     def get_loss(self, outputs, labels, t):
         loss = self.loss_function(outputs, labels).item()
+        _, predicted = torch.max(outputs.data, 1)
         i = 0
         weight_decay = 0
         sparseness = 0

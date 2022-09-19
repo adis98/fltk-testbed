@@ -138,7 +138,6 @@ class DecomposedLinear(nn.Module):
     def set_atten(self,t,dim):
         if t==0:
             self.atten = Parameter(torch.zeros(dim))
-            self.atten.requires_grad=False
         else:
             self.atten = Parameter(torch.rand(dim))
 
