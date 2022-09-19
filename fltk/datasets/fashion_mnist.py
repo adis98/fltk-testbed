@@ -1,14 +1,11 @@
 # pylint: disable=missing-function-docstring,missing-class-docstring,invalid-name
-from fltk.datasets.dataset import Dataset
+from .dataset import Dataset
 from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data import DataLoader, DistributedSampler
 
 
 class FashionMNISTDataset(Dataset):
-    """
-    FashionMNIST Dataset implementation for Distributed learning experiments.
-    """
 
     def __init__(self, config, learning_param, rank: int = 0, world_size: int = None):
         super(FashionMNISTDataset, self).__init__(config, learning_param, rank, world_size)

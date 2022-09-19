@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Union, Tuple
-
+import random
 import torch
 
 from fltk.core.client import Client
@@ -69,8 +69,18 @@ class Federator(Node):
         self.exp_data = DataContainer('federator', config.output_path, FederatorRecord, config.save_data_append)
         self.aggregation_method = get_aggregation(config.aggregation)
 
-        #continual learning configs
+        # continual learning configs
         self.continual = config.continual
+        self.kbs = []  # this holds the complete knowledge base across tasks
+        # knowledge base initialization
+        if self.continual and ('weit' in str(config.net_name).lower()):
+            self.kb = []  # dummy knowledge base that's used in case continual learning is done with WEIT
+            for name, para in self.net.named_parameters():
+                if 'aw' in name:
+                    shape = np.concatenate([para.shape, [int(round(config.clients_per_round))]], axis=0)
+                    from_kb_l = np.zeros(shape)
+                    from_kb_l = torch.from_numpy(from_kb_l)
+                    self.kb.append(from_kb_l)
 
     def create_clients(self):
         """
@@ -86,8 +96,8 @@ class Federator(Node):
                 client_name = f'client{client_id}'
                 client = Client(client_name, client_id, world_size, copy.deepcopy(self.config))
                 self.clients.append(
-                        LocalClient(client_name, client, 0, DataContainer(client_name, self.config.output_path,
-                                                                          ClientRecord, self.config.save_data_append)))
+                    LocalClient(client_name, client, 0, DataContainer(client_name, self.config.output_path,
+                                                                      ClientRecord, self.config.save_data_append)))
                 self.logger.info(f'Client "{client_name}" created')
 
     def register_client(self, client_name: str, rank: int):
@@ -104,8 +114,8 @@ class Federator(Node):
         if self.config.single_machine:
             self.logger.warning('This function should not be called when in single machine mode!')
         self.clients.append(
-                LocalClient(client_name, client_name, rank, DataContainer(client_name, self.config.output_path,
-                                                                          ClientRecord, self.config.save_data_append)))
+            LocalClient(client_name, client_name, rank, DataContainer(client_name, self.config.output_path,
+                                                                      ClientRecord, self.config.save_data_append)))
 
     def stop_all_clients(self):
         """
@@ -174,6 +184,7 @@ class Federator(Node):
         self.clients_ready()
         # self.logger.info('Sleeping before starting communication')
         # time.sleep(20)
+
         for communication_round in range(self.config.rounds):
             self.exec_round(communication_round)
 
@@ -266,6 +277,16 @@ class Federator(Node):
         for client in selected_clients:
             self.message(client.ref, Client.update_nn_parameters, last_model)
 
+            if self.continual and (
+                    'weit' in str(self.config.net_name)) and com_round_id % self.config.rounds_per_task == 0:
+                task_id = com_round_id // self.config.rounds_per_task
+                if task_id != 0:
+                    self.message(client.ref, Client.set_knowledge, task_id, random.choice(
+                        self.kbs))  # send a sample from knowledge base only after learning at least one task
+                else:
+                    self.message(client.ref, Client.set_knowledge, task_id,
+                                 self.kb)  # if its the very first round then just send the dummy kb
+
         # Actual training calls
         client_weights = {}
         client_sizes = {}
@@ -275,14 +296,24 @@ class Federator(Node):
         # Client training
         training_futures: List[torch.Future] = []  # pylint: disable=no-member
         avg_of_avg_accuracies = []
+        kb_clients = []
+
         def training_cb(fut: torch.Future, client_ref: LocalClient, client_weights, client_sizes,
                         num_epochs):  # pylint: disable=no-member
-            train_loss, weights, accuracy, test_loss, round_duration, train_duration, test_duration, c_mat = fut.wait()
+            if com_round_id % self.config.rounds_per_task == self.config.rounds_per_task - 1:
+                train_loss, weights, accuracy, test_loss, round_duration, train_duration, test_duration, c_mat, kb_client = fut.wait()
+                kb_clients.append(kb_client)
+
+            else:
+                train_loss, weights, accuracy, test_loss, round_duration, train_duration, test_duration, c_mat = fut.wait()
             self.logger.info(f'Training callback for client {client_ref.name} with accuracy={accuracy}')
             avg_of_avg_accuracies.append(accuracy)
             client_weights[client_ref.name] = weights
             client_data_size = self.message(client_ref.ref, Client.get_client_datasize)
             client_sizes[client_ref.name] = client_data_size
+
+            if self.continual:
+                c_mat = []
             c_record = ClientRecord(com_round_id, train_duration, test_duration, round_duration, num_epochs, 0,
                                     accuracy, train_loss, test_loss, confusion_matrix=c_mat)
             client_ref.exp_data.append(c_record)
@@ -306,11 +337,22 @@ class Federator(Node):
 
         updated_model = self.aggregation_method(client_weights, client_sizes)
         self.update_nn_parameters(updated_model)
-        self.logger.info(f'Avg of avg accuracies across clients={sum(avg_of_avg_accuracies)/len(avg_of_avg_accuracies)}')
+
+        if com_round_id % self.config.rounds_per_task == (self.config.rounds_per_task - 1):  # need to stash this in the knowledge base at the federator
+            kb_mod = []
+            for layer_type in range(len(kb_clients[0])):
+                kb_layer = []
+                for client in range(len(kb_clients)):
+                    kb_layer.append(kb_clients[client][layer_type])
+                kb_mod.append(kb_layer)
+                kb_mod[-1] = torch.stack(kb_mod[-1], axis=-1)
+            self.kbs.append(kb_mod)
+
         avg_of_avg_accuracies = []
-        if not self.continual: # because continual learning is evaluated on the client-side for now.
+        if not self.continual:  # because continual learning is evaluated on the client-side for now.
             test_accuracy, test_loss, conf_mat = self.test(self.net)
-            self.logger.info(f'[Round {com_round_id:>3}] Federator has a accuracy of {test_accuracy} and loss={test_loss}')
+            self.logger.info(
+                f'[Round {com_round_id:>3}] Federator has a accuracy of {test_accuracy} and loss={test_loss}')
 
             end_time = time.time()
             duration = end_time - start_time
@@ -318,3 +360,4 @@ class Federator(Node):
                                      confusion_matrix=conf_mat)
             self.exp_data.append(record)
             self.logger.info(f'[Round {com_round_id:>3}] Round duration is {duration} seconds')
+

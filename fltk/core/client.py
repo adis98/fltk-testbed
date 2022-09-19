@@ -119,12 +119,13 @@ class Client(Node):
 
                 if task_id is not None:
                     if self.window == "sliding":
-                        outputs = self.net(inputs, task_id)[
-                                  task_id * self.classes_per_task:(task_id + 1) * self.classes_per_task]
-                        labels = list(map(lambda x: mapper[x][1], labels))
+                        outputs = self.net(inputs, task_id)
+                        labels = list(map(lambda x: mapper[x][1] + task_id * self.classes_per_task, labels.numpy().astype(int)))
+                        labels = torch.tensor(labels)
                     elif self.window == "expanding":
-                        outputs = self.net(inputs, task_id)[:(task_id + 1) * self.classes_per_task]
-                        labels = list(map(lambda x: mapper[x][1] + task_id * self.classes_per_task, labels))
+                        outputs = self.net(inputs, task_id)
+                        labels = list(map(lambda x: mapper[x][1] + task_id * self.classes_per_task, labels.numpy().astype(int)))
+                        labels = torch.tensor(labels)
                     else:
                         outputs = self.net(inputs, task_id)
 
@@ -215,12 +216,13 @@ class Client(Node):
                 for (images, labels) in self.dataset.get_test_loader():
                     images, labels = images.to(self.device), labels.to(self.device)
                     if self.window == "sliding":
-                        outputs = self.net(images, task_id)[
-                                  task_id * self.classes_per_task:(task_id + 1) * self.classes_per_task]
-                        labels = list(map(lambda x: mapper[x][1], labels))
+                        outputs = self.net(images, task_id)
+                        labels = list(map(lambda x: mapper[x][1] + task_id * self.classes_per_task, labels.numpy().astype(int)))
+                        labels = torch.tensor(labels)
                     elif self.window == "expanding":
-                        outputs = self.net(images, task_id)[:(task_id + 1) * self.classes_per_task]
-                        labels = list(map(lambda x: mapper[x][1] + task_id * self.classes_per_task, labels))
+                        outputs = self.net(images, task_id)
+                        labels = list(map(lambda x: mapper[x][1] + task_id * self.classes_per_task, labels.numpy().astype(int)))
+                        labels = torch.tensor(labels)
                     else:
                         outputs = self.net(images, task_id)
 
@@ -263,6 +265,28 @@ class Client(Node):
         loss, weights = self.train(num_epochs, round_id)
         time_mark_between = time.time()
 
+        kb = []
+        mask = []
+        if self.continual and ('weit' in str(self.config.net_name)):
+            for name, para in self.net.named_parameters():
+                if 'aw' in name:
+                    aw = para.detach()
+                    aw.requires_grad = False
+                    kb.append(aw)
+                elif 'mask' in name:
+                    msk = para.detach()
+                    msk.requires_grad = False
+                    mask.append(msk)
+
+            num_tasks_learnt = (round_id // self.config.rounds_per_task) + 1
+            if len(self.pre_weight['aw']) < num_tasks_learnt:
+                self.pre_weight['aw'].append([])
+                self.pre_weight['mask'].append([])
+                self.pre_weight['weight'].append([])
+            self.pre_weight['aw'][-1] = kb
+            self.pre_weight['mask'][-1] = mask
+            self.pre_weight['weight'][-1] = self.net.get_weights()
+
         if self.continual:
             until_task = round_id // self.rounds_per_task  # testing to be done from task_ID zero till the until_task (inclusive)
             accuracy, test_loss, test_conf_matrix = self.continualtest(until_task)
@@ -279,7 +303,12 @@ class Client(Node):
             self.optimizer.pre_communicate()
         for k, value in weights.items():
             weights[k] = value.cpu()
-        return loss, weights, accuracy, test_loss, round_duration, train_duration, test_duration, test_conf_matrix
+
+        if (round_id%self.config.rounds_per_task == self.config.rounds_per_task-1) and len(kb) > 0:  # return knowledge base if its the last round of task and if it actually has something, i.e., WEIT model
+            return loss, weights, accuracy, test_loss, round_duration, train_duration, test_duration, test_conf_matrix, kb
+        else:
+            return loss, weights, accuracy, test_loss, round_duration, train_duration, test_duration, test_conf_matrix
+
 
     def __del__(self):
         self.logger.info(f'Client {self.id} is stopping')

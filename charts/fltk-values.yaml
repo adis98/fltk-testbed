@@ -1,8 +1,7 @@
 fltk:
-    outputDir: output
     configDir: config
     workDir: /opt/federation-lab
 provider:
     domain: gcr.io
-    projectName: test-bed-fltk
+    projectName: test-bed-distml
     imageName: fltk:latest

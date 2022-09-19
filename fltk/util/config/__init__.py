@@ -1,10 +1,10 @@
-from __future__ import annotations
-
-import logging
+import json
 from pathlib import Path
 from typing import Optional
 
-from fltk.util.config.definitions import Loss
+import yaml
+import logging
+
 from fltk.util.config.distributed_config import DistributedConfig
 from fltk.util.config.learning_config import FedLearningConfig, get_safe_loader, DistLearningConfig
 
@@ -29,7 +29,7 @@ def get_distributed_config(args, alt_path: str = None) -> Optional[DistributedCo
     try:
         with open(config_path, 'r') as config_file:
             logging.info(f"Loading file {config_path}")
-            config = DistributedConfig.from_json(config_file.read())  # pylint: disable=no-member
+            config = DistributedConfig.from_dict(json.load(config_file))  # pylint: disable=no-member
             config.config_path = Path(args.config)
     except Exception as e:  # pylint: disable=broad-except
         msg = f"Failed to get distributed config: {e}"
@@ -38,15 +38,15 @@ def get_distributed_config(args, alt_path: str = None) -> Optional[DistributedCo
 
 
 def get_learning_param_config(args, alt_path: str = None) -> Optional[DistLearningConfig]:
-    """
-    Retrieve learning parameter configuration from Disk for distributed learning experiments.
-    """
     if args:
         config_path = args.experiment_config
     else:
         config_path = alt_path
+    safe_loader = get_safe_loader()
     try:
-        learning_params: DistLearningConfig = DistLearningConfig.from_yaml(Path(config_path))
+        with open(config_path) as f:
+            learning_params_dict = yaml.load(f, Loader=safe_loader)
+            learning_params = DistLearningConfig.from_dict(learning_params_dict)
     except Exception as e:
         msg = f"Failed to get learning parameter configuration for distributed experiments: {e}"
         logging.info(msg)

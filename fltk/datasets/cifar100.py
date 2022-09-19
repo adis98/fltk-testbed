@@ -2,12 +2,12 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets
 from torchvision import transforms
 
-from fltk.datasets.dataset import Dataset
+from .dataset import Dataset
 
 
 class CIFAR100Dataset(Dataset):
     """
-    CIFAR100 Dataset implementation for Distributed learning experiments.
+    CIFAR100 Dataset implementation for Federated learning experiments.
     """
 
     DEFAULT_TRANSFORM = transforms.Compose([

@@ -1,10 +1,14 @@
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 # noinspection PyUnresolvedReferences
 from typing import List, Optional, OrderedDict, Any, Union, Tuple, Type, Dict, MutableMapping, T
 
+import deprecate
 from dataclasses_json import dataclass_json, LetterCase, config
+# noinspection PyProtectedMember
+from torch.nn.modules.loss import _Loss
 
 from fltk.util.config.definitions import DataSampler, Nets, Aggregations, Optimizations, Dataset, ExperimentType, Loss
 
@@ -55,7 +59,6 @@ class HyperParameterConfiguration:
                               default_factory=_none_factory)
     test_bs: Optional[int] = field(metadata=config(field_name="testBatchSize"), default_factory=_none_factory)
     lr_decay: Optional[float] = field(metadata=config(field_name="learningRateDecay"), default_factory=_none_factory)
-    total_epochs: int = None
 
     def merge_default(self, other: Dict[str, Any]):
         """
@@ -182,7 +185,7 @@ class SystemParameters:
     executor_memory: Amount of RAM allocated to each executor.
     action: Indicating whether it regards 'inference' or 'train'ing time.
     """
-    data_parallelism: int
+    data_parallelism: Optional[int]
     configurations: OrderedDict[str, SystemResources]
 
     def get(self, tpe: str):
@@ -222,12 +225,19 @@ class LearningParameters:
     Dataclass containing configuration parameters for the learning process itself. This includes the Federated learning
     parameters as well as some system parameters like cuda.
     """
+    _total_epochs: int = field(metadata=config(field_name='totalEpochs'))
     cuda: bool
     rounds: Optional[int] = None
     epochs_per_round: Optional[int] = None
     clients_per_round: Optional[int] = None
     aggregation: Optional[Aggregations] = None
     data_sampler: Optional[SamplerConfiguration] = None
+
+    @property
+    def total_epochs(self):
+        logging.warning('By default `total_epochs` is not used duruing Federated Learning. This attribute will be'
+                        'changed in a coming release.')
+        return self._total_epochs
 
 
 @dataclass_json(letter_case=LetterCase.CAMEL)
@@ -251,6 +261,7 @@ class JobClassParameter:
     network_configuration: NetworkConfiguration
     system_parameters: SystemParameters
     hyper_parameters: HyperParameters
+    experiment_configuration: ExperimentConfiguration
     class_probability: Optional[float] = None
     learning_parameters: Optional[LearningParameters] = None
     priorities: Optional[List[Priority]] = None
@@ -267,50 +278,43 @@ class JobDescription:
     not implemented in FLTK, but could be added as a project (advanced).
     """
     experiment_type: ExperimentType = field(metadata=config(field_name='type'))
-    job_class_parameters: List[JobClassParameter]
-    preemtible_jobs: Optional[bool] = field(metadata=config(field_name='preemptJobs'), default_factory=_none_factory)
-    arrival_statistic: Optional[float] = field(metadata=config(field_name='lambda'), default_factory=_none_factory)
+    job_class_parameters: JobClassParameter
+    preemtible_jobs: Optional[float] = field(default_factory=_none_factory)
+    arrival_statistic: Optional[float] = field(default_factory=_none_factory)
+    priority: Optional[Priority] = None
 
-
-@dataclass_json(letter_case=LetterCase.CAMEL)
-@dataclass(frozen=True)
-class ExperimentDescription:
-    """
-    Dataclass object containing the configuration of an entire experiment, including
-    configurations for repetitions. See also JobDescription to define types of jobs, and
-    ExperimentConfiguration to set the configuration of experiments.
-    """
-    train_tasks: List[JobDescription]
+    def get_experiment_configuration(self) -> ExperimentConfiguration:
+        """
+        Helper function to retrieve experiment configuration object from a JobDescription.
+        @return: Experiment configuration object corresponding to a job.
+        @rtype: ExperimentConfiguration
+        """
+        return self.job_class_parameters.experiment_configuration
 
 
 @dataclass(order=True)
 class TrainTask:
     """
     Training description used by the orchestrator to generate tasks. Contains 'transposed' information of the
-    configuration file.
+    configuration file to make job generation easier and cleaner by using a 'flat' data class.
 
-    Dataclass is ordered, to allow for ordering of arrived tasks in a PriorityQueue (can be used for scheduling).
+    Dataclass is ordered, to allow for ordering of arrived tasks in a PriorityQueue (for scheduling).
     """
     network_configuration: NetworkConfiguration = field(compare=False)
+    experiment_configuration: ExperimentConfiguration = field(compare=False)
     system_parameters: SystemParameters = field(compare=False)
     hyper_parameters: HyperParameters = field(compare=False)
     learning_parameters: Optional[LearningParameters] = field(compare=False)
-    seed: int = field(compare=False)
     identifier: str = field(compare=False)
-    replication: Optional[int] = field(compare=False, default=None)                     # Utilized for batch arrivals.
-    priority: Optional[int] = None                                                      # Allow for sorting/priority.
-    experiment_type: ExperimentType = field(compare=False, metadata=config(field_name="type"), default=None)
+    replication: Optional[int] = 0
+    priority: Optional[int] = None
+    experiment_type: ExperimentType = None
 
-    def __init__(self,
-                 identity: str,
-                 job_parameters: JobClassParameter,
-                 priority: Priority = None,
-                 replication: int = None,
-                 experiment_type: ExperimentType = None,
-                 seed: int = None):
+    def __init__(self, identity: str, job_parameters: JobClassParameter, priority: Priority = None,
+                 experiment_config: ExperimentConfiguration = None, replication = None,
+                 experiment_type: ExperimentType = None):
         """
-        Overridden init method for dataclass, to allow for transposing a JobDescription to a flattened TrainTask, which
-        contains the required information to schedule a task.
+        Overridden init method for dataclass, to allow for 'exploding' a JobDescription object to a flattened object.
         @param job_parameters:
         @type job_parameters:
         @param priority:
@@ -322,26 +326,27 @@ class TrainTask:
         self.hyper_parameters = job_parameters.hyper_parameters
         if priority:
             self.priority = priority.priority
+        self.experiment_configuration = experiment_config
         self.learning_parameters = job_parameters.learning_parameters
         self.replication = replication
         self.experiment_type = experiment_type
-        self.seed = seed
 
-
-class ExperimentParser:  # pylint: disable=too-few-public-methods
+class ExperimentParser():  # pylint: disable=too-few-public-methods
     """
-    Simpel parser to load load experiment configuration into a programmatic objects.
+    Simple parser object to load configuration files into Dataclass objects.
     """
 
     def __init__(self, config_path: Path):
         self.__config_path = config_path
 
-    def parse(self) -> ExperimentDescription:
+    def parse(self) -> List[JobDescription]:
         """
         Parse function to load JSON conf into JobDescription objects. Any changes to the JSON file format
         should be reflected by the classes used. For more information refer to the dataclasses JSON
         documentation https://pypi.org/project/dataclasses-json/.
         """
         with open(self.__config_path, 'r') as config_file:
-            experiment = ExperimentDescription.from_json(config_file.read())
-        return experiment
+            config_dict = json.load(config_file)
+            job_list = [JobDescription.from_dict(job_description) for job_description in
+                        config_dict]  # pylint: disable=no-member
+        return job_list

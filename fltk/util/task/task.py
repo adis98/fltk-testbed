@@ -3,15 +3,14 @@ import collections
 import uuid
 from dataclasses import field, dataclass
 # noinspection PyUnresolvedReferences
-import random
-# noinspection PyUnresolvedReferences
 from typing import OrderedDict, Optional, T, List
 from uuid import UUID
 
 from fltk.datasets.dataset import Dataset
 from fltk.util.config.definitions import Nets
-from fltk.util.task.config.parameter import (SystemResources, LearningParameters, OptimizerConfig, SamplerConfiguration,
-                                            SystemParameters, HyperParameters)
+from fltk.util.task.config import SystemParameters, HyperParameters
+from fltk.util.task.config.parameter import SystemResources, LearningParameters, \
+    OptimizerConfig, SamplerConfiguration
 from fltk.util.task.generator.arrival_generator import Arrival
 
 MASTER_REPLICATION: int = 1  # Static master replication value, dictated by PytorchTrainingJobs
@@ -60,6 +59,7 @@ class ArrivalTask(abc.ABC):
                 [(tpe, sys_conf.get(tpe)) for tpe in self.type_map.keys()])
         return ret_dict
 
+    @abc.abstractmethod
     def typed_replica_count(self, replica_type: str) -> int:
         """
         Helper function to get replica count per type of learner.
@@ -68,11 +68,13 @@ class ArrivalTask(abc.ABC):
         @return: Number of workers to spawn of a specific type.
         @rtype: int
         """
+
+    def typed_replica_count(self, replica_type):
         return self.type_map[replica_type]
 
     def get_hyper_param(self, tpe, parameter):
         """
-        Helper function to acquire hyperparameters as-though the configuration is a flat configuration file.
+        Helper function to acquire hyper-parameters as-though the configuration is a flat configuration file.
         @param tpe:
         @type tpe:
         @param parameter:
@@ -84,7 +86,7 @@ class ArrivalTask(abc.ABC):
 
     def get_learn_param(self, parameter):
         """
-        Helper function to acquire federated learning parameters as-if the configuration is a flat configuration
+        Helper function to acquire federated learning parameters as-though the configuration is a flat configuration
         file.
         @param parameter:
         @type parameter:
@@ -93,14 +95,14 @@ class ArrivalTask(abc.ABC):
         """
         return getattr(self.learning_parameters, parameter)
 
-    def get_sampler_param(self, tpe: str, parameter: str):
+    def get_sampler_param(self, tpe: str, parameter: LearningParameters):
         """
         Helper function to acquire federated data sampler parameters as-though the configuration is a flat configuration
         file.
         @param tpe: Type indication for a learner, future version with heterogenous deployment would require this.
         @type tpe: str
-        @param parameter: Which parameter to get from the configuration object.
-        @type parameter: str
+        @param parameter:
+        @type parameter:
         @return:
         @rtype:
         """
@@ -168,6 +170,8 @@ class ArrivalTask(abc.ABC):
     def get_net_param(self, parameter):
         """
         Helper function to acquire network parameters as-though the configuration is a flat configuration file.
+        @param tpe:
+        @type tpe:
         @param parameter:
         @type parameter:
         @return:
@@ -191,26 +195,12 @@ class DistributedArrivalTask(ArrivalTask):
 
     @staticmethod
     def build(arrival: Arrival, u_id: uuid.UUID, replication: int) -> T:
-        """
-        Construct a DistributedArrivalTask from an Arrival object. This will create a task with random seed in
-        [0, sys.maxsize] for randomness. It assumes that the random seed/performance of the model itself is not
-        important on it own, but the reproducability is.
-        @param arrival: Arrival object containing the configuration of a task to be scheduled.
-        @type arrival: Arrival
-        @param u_id: Unique identifier to prevent collisions from happening on experiments.
-        @type u_id: uuid.UUID
-        @param replication:
-        @type replication:
-        @return:
-        @rtype:
-        """
         task = DistributedArrivalTask(
                 id=u_id,
                 network=arrival.get_network(),
-                priority=arrival.get_priority(),
                 dataset=arrival.get_dataset(),
                 loss_function=arrival.task.network_configuration.loss_function,
-                seed=random.randint(0, 2**32 - 2),
+                seed=arrival.get_experiment_config().random_seed[replication],
                 replication=replication,
                 type_map=collections.OrderedDict({
                     'Master': MASTER_REPLICATION,
@@ -220,6 +210,11 @@ class DistributedArrivalTask(ArrivalTask):
                 hyper_parameters=arrival.get_parameter_config(),
                 learning_parameters=arrival.get_learning_config())
         return task
+
+    def typed_replica_count(self, replica_type):
+        parallelism_dict = {'Master': MASTER_REPLICATION,
+                            'Worker': self.system_parameters.data_parallelism - MASTER_REPLICATION}
+        return parallelism_dict[replica_type]
 
 
 @dataclass(order=True)
@@ -235,14 +230,12 @@ class FederatedArrivalTask(ArrivalTask):
                 network=arrival.get_network(),
                 dataset=arrival.get_dataset(),
                 loss_function=arrival.task.network_configuration.loss_function,
-                seed=arrival.task.seed,
+                seed=arrival.get_experiment_config().random_seed[replication],
                 replication=replication,
-                type_map=collections.OrderedDict({
-                    'Master': MASTER_REPLICATION,
-                    'Worker': arrival.task.system_parameters.data_parallelism
-                }),
+                type_map=arrival.get_experiment_config().worker_replication,
                 system_parameters=arrival.get_system_config(),
                 hyper_parameters=arrival.get_parameter_config(),
                 priority=arrival.get_priority(),
                 learning_parameters=arrival.get_learning_config())
         return task
+

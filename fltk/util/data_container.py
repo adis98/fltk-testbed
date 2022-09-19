@@ -78,7 +78,8 @@ class DataContainer:
         record.node_name = self.name
         self.records.append(record)
         if self.append_mode:
-            dw = csv.DictWriter(self.file_handle, self.record_type.__annotations__)
+            fieldnames = record.__dict__.keys()
+            dw = csv.DictWriter(self.file_handle, fieldnames=fieldnames)
             dw.writerow(record.__dict__)
             self.file_handle.flush()
 

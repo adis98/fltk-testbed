@@ -145,7 +145,10 @@ class Node(abc.ABC):
         model_class = get_net(self.config.net_name)
         if model_class == fltk.nets.cifar_100_lenet.Cifar100LeNet or model_class == fltk.nets.cifar_100_lenetweit.Cifar100LeNetWEIT:
             if self.config.continual:
-                model = model_class([3, 32, 32], window=self.config.output_window_type)  # cifar 100's input size
+                if 'weit' in str(self.config.net_name):
+                    model = model_class([3, 32, 32], window=self.config.output_window_type, clients_per_round=self.config.clients_per_round)  # WEIT models need to set the attention too
+                else:
+                    model = model_class([3, 32, 32], window=self.config.output_window_type)  # cifar 100's input size
             else:
                 model = model_class([3, 32, 32], window="full")  # use a full window if not doing continual learning
         else:
@@ -174,6 +177,9 @@ class Node(abc.ABC):
             # self.offloaded_net.load_state_dict(copy.deepcopy(new_params), strict=True)
         else:
             self.net.load_state_dict(copy.deepcopy(new_params), strict=True)
+
+    def set_knowledge(self, task_id, kb):
+        self.net.set_knowledge(task_id, kb)
 
     def message(self, other_node: str, method: Callable, *args, **kwargs) -> torch.Future:  # pylint: disable=no-member
         """

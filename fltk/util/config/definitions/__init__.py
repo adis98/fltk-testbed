@@ -1,7 +1,3 @@
-"""
-Module for declaring types and definitions, including helper functions that allow to retrieve
-object (types) from a definition.
-"""
 from .data_sampler import DataSampler
 from .optim import Optimizations
 from .aggregate import Aggregations
@@ -10,5 +6,4 @@ from .logging import LogLevel
 from .net import Nets
 from .optim import Optimizations
 from .experiment_type import ExperimentType
-from .loss import Loss
-from .orchestrator import OrchestratorType
+from .loss import Loss, get_loss_function

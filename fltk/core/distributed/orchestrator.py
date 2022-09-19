@@ -1,11 +1,9 @@
-from __future__ import annotations
-import abc
 import collections
 import logging
 import time
 import uuid
 from queue import PriorityQueue
-from typing import OrderedDict, Dict, Type, Set, Union
+from typing import List, OrderedDict, Dict, Type
 
 from jinja2 import Environment, FileSystemLoader
 from kubeflow.training import PyTorchJobClient
@@ -15,22 +13,16 @@ from kubernetes.client import V1ConfigMap, V1ObjectMeta
 
 from fltk.core.distributed.dist_node import DistNode
 from fltk.util.cluster.client import construct_job, ClusterManager
+from fltk.util.config import DistributedConfig
 from fltk.util.task import get_job_arrival_class
 from fltk.util.task.generator.arrival_generator import ArrivalGenerator, Arrival
 from fltk.util.task.task import DistributedArrivalTask, FederatedArrivalTask, ArrivalTask
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from fltk.util.config import DistributedConfig
-
-
-# Setup required variables for Jinja templates.
 EXPERIMENT_DIR = 'experiments'
 __ENV = Environment(loader=FileSystemLoader(EXPERIMENT_DIR))
 
 
-def _generate_experiment_path_name(task: ArrivalTask, u_id: Union[uuid.UUID, str], config: DistributedConfig):
+def _generate_experiment_path_name(task: ArrivalTask, u_id: str, config: DistributedConfig):
     """
     Helper function to generate experiment name for logging without conflicts
     @param task: Arrival task for Task related information.
@@ -50,44 +42,18 @@ def _generate_experiment_path_name(task: ArrivalTask, u_id: Union[uuid.UUID, str
 
 def render_template(task: ArrivalTask, tpe: str, replication: int, experiment_path: str) -> str:
     """
-    Helper function to render jinja templates with necessary arguments for experiment (types). These templates are
-    used for generating ConfigMaps used by the Pods that perform the learning experiments.
-    @param task: Arrival description of Experiment/Deployment.
-    @type task: ArrivalTask
-    @param tpe: Indicator to distinct between 'learner' and 'parameter server'/'federator'
-    @type tpe: str
-    @param replication: Count for the replication of an experiment.
-    @type replication: int
-    @param experiment_path: Path where the experiment folder resides.
-    @type experiment_path: str
-    @return: Rendered template containing the content of a ConfigMap for a learner of `tpe` for the provided task.
-    @rtype: str
+    Helper function to render jinja templates with necessary arguments for experiments.
     """
     if isinstance(task, FederatedArrivalTask):
         template = __ENV.get_template('node.jinja.yaml')
-    elif isinstance(task, DistributedArrivalTask):
-        template = __ENV.get_template('dist_node.jinja.yaml')
     else:
-        raise Exception(f"Cannot handle type of task: {task}")
+        template = __ENV.get_template('dist_node.jinja.yaml')
     filled_template = template.render(task=task, tpe=tpe, replication=replication, experiment_path=experiment_path)
     return filled_template
 
 
 def _prepare_experiment_maps(task: ArrivalTask, config: DistributedConfig, u_id: uuid.UUID, replication: int = 1) -> \
         (OrderedDict[str, V1ConfigMap], OrderedDict[str, str]):
-    """
-    Helper private function to create ConfigMap descriptions for a deployment of learners.
-    @param task: Task description object.
-    @type task: ArrivalTask
-    @param config:
-    @type config:
-    @param u_id:
-    @type u_id:
-    @param replication:
-    @type replication:
-    @return:
-    @rtype:
-    """
     type_dict = collections.OrderedDict()
     name_dict = collections.OrderedDict()
     for tpe in task.type_map.keys():
@@ -117,9 +83,9 @@ def _generate_task(arrival) -> ArrivalTask:
     return task
 
 
-class Orchestrator(DistNode, abc.ABC):
+class Orchestrator(DistNode):
     """
-    Central component of the Federated Learning System: The Orchestrator.
+    Central component of the Federated Learning System: The Orchestrator
 
     The Orchestrator is in charge of the following tasks:
     - Running experiments
@@ -136,15 +102,14 @@ class Orchestrator(DistNode, abc.ABC):
     _alive = False
     # Priority queue, requires an orderable object, otherwise a Tuple[int, Any] can be used to insert.
     pending_tasks: "PriorityQueue[ArrivalTask]" = PriorityQueue()
-    deployed_tasks: Set[ArrivalTask] = set()
-    completed_tasks: Set[ArrivalTask] = set()
-    SLEEP_TIME = 5
+    deployed_tasks: List[DistributedArrivalTask] = []
+    completed_tasks: List[str] = []
 
     def __init__(self, cluster_mgr: ClusterManager, arv_gen: ArrivalGenerator, config: DistributedConfig):
-        self._logger = logging.getLogger('Orchestrator')
-        self._logger.debug("Loading in-cluster configuration")
-        self._cluster_mgr = cluster_mgr
-        self._arrival_generator = arv_gen
+        self.__logger = logging.getLogger('Orchestrator')
+        self.__logger.debug("Loading in-cluster configuration")
+        self.__cluster_mgr = cluster_mgr
+        self.__arrival_generator = arv_gen
         self._config = config
 
         # API to interact with the cluster.
@@ -154,31 +119,107 @@ class Orchestrator(DistNode, abc.ABC):
     def stop(self) -> None:
         """
         Stop the Orchestrator.
+        @return:
+        @rtype:
+        """
+        self.__logger.info("Received stop signal for the Orchestrator.")
+        self._alive = False
+
+    def run(self, clear: bool = False) -> None:
+        """
+        Main loop of the Orchestrator.
+        @param clear: Boolean indicating whether a previous deployment needs to be cleaned up (i.e. lingering jobs that
+        were deployed by the previous run).
+
+        @type clear: bool
         @return: None
         @rtype: None
         """
-        self._logger.info("Received stop signal for the Orchestrator.")
-        self._alive = False
+        self._alive = True
+        start_time = time.time()
+        if clear:
+            self.__clear_jobs()
+        while self._alive and time.time() - start_time < self._config.get_duration():
+            # 1. Check arrivals
+            # If new arrivals, store them in arrival list
+            while not self.__arrival_generator.arrivals.empty():
+                arrival = self.__arrival_generator.arrivals.get()
+                task = _generate_task(arrival)
+                self.__logger.debug(f"Arrival of: {task}")
+                self.pending_tasks.put(task)
 
-        self._cluster_mgr.stop()
+            while not self.pending_tasks.empty():
+                # Do blocking request to priority queue
+                curr_task = self.pending_tasks.get()
+                self.__logger.info(f"Scheduling arrival of Arrival: {curr_task.id}")
+                job_to_start = construct_job(self._config, curr_task)
 
-    @abc.abstractmethod
-    def run(self, clear: bool = False, experiment_replication: int = -1) -> None:
+                # Hack to overcome limitation of KubeFlow version (Made for older version of Kubernetes)
+                self.__logger.info(f"Deploying on cluster: {curr_task.id}")
+                self._client.create(job_to_start, namespace=self._config.cluster_config.namespace)
+                self.deployed_tasks.append(curr_task)
+
+                # TODO: Extend this logic in your real project, this is only meant for demo purposes
+                # For now we exit the thread after scheduling a single task.
+
+                self.stop()
+                return
+
+            self.__logger.debug("Still alive...")
+            time.sleep(5)
+
+        logging.info('Experiment completed, currently does not support waiting.')
+
+    def run_batch(self, clear: bool = False) -> None:
         """
-        Main loop of the Orchestrator for simulated arrivals. By default, previous deployments are not stopped (i.e.
-        PytorchTrainingJobs) on the cluster, which may interfere with utilization statistics of your cluster.
-        Make sure to check if you want previous results to be removed.
+        Main loop of the Orchestrator for processing a configuration as a batch, i.e. deploy one-after-another without
+        any scheduling or simulation applied.
         @param clear: Boolean indicating whether a previous deployment needs to be cleaned up (i.e. lingering jobs that
         were deployed by the previous run).
         @type clear: bool
-        @param experiment_replication: Replication index (integer) to allow for the logging to experiment specific
-        directories for experiments.
-        @type experiment_replication: int
         @return: None
         @rtype: None
         """
+        self._alive = True
+        start_time = time.time()
+        if clear:
+            self.__clear_jobs()
+        while self._alive and time.time() - start_time < self._config.get_duration():
+            # 1. Check arrivals
+            # If new arrivals, store them in arrival list
+            while not self.__arrival_generator.arrivals.empty():
+                arrival = self.__arrival_generator.arrivals.get()
+                task = _generate_task(arrival)
+                self.__logger.debug(f"Arrival of: {task}")
+                self.pending_tasks.put(task)
 
-    def _clear_jobs(self):
+            while not self.pending_tasks.empty():
+                # Do blocking request to priority queue
+                curr_task: ArrivalTask = self.pending_tasks.get()
+                self.__logger.info(f"Scheduling arrival of Arrival: {curr_task.id}")
+                configmap_name_dict = None
+                # Create persistent logging information. A these will not be deleted by the Orchestrator, as such
+                # allow you to retrieve information of experiments even after removing the PytorchJob after completion.
+
+                config_dict, configmap_name_dict = _prepare_experiment_maps(curr_task, self._config, curr_task.id, 1)
+                self.__create_config_maps(config_dict)
+                job_to_start = construct_job(self._config, curr_task, configmap_name_dict)
+
+                # Hack to overcome limitation of KubeFlow version (Made for older version of Kubernetes)
+                self.__logger.info(f"Deploying on cluster: {curr_task.id}")
+                self._client.create(job_to_start, namespace=self._config.cluster_config.namespace)
+                self.deployed_tasks.append(curr_task)
+
+                # TODO: Extend this logic in your real project, this is only meant for demo purposes
+                # For now we exit the thread after scheduling a single task.
+                self.stop()
+
+            self.__logger.debug("Still alive...")
+            time.sleep(5)
+
+        logging.info('Experiment completed, currently does not support waiting.')
+
+    def __clear_jobs(self):
         """
         Function to clear existing jobs in the environment (i.e. old experiments/tests). This will will, currently,
         not remove configuration map objects. A later version will allow for removing these autmatically as well.
@@ -186,11 +227,11 @@ class Orchestrator(DistNode, abc.ABC):
         @rtype: None
         """
         namespace = self._config.cluster_config.namespace
-        self._logger.info(f'Clearing old jobs in current namespace: {namespace}')
+        self.__logger.info(f'Clearing old jobs in current namespace: {namespace}')
 
         for job in self._client.get(namespace=self._config.cluster_config.namespace)['items']:
             job_name = job['metadata']['name']
-            self._logger.info(f'Deleting: {job_name}')
+            self.__logger.info(f'Deleting: {job_name}')
             try:
                 self._client.custom_api.delete_namespaced_custom_object(
                         PYTORCHJOB_GROUP,
@@ -199,144 +240,13 @@ class Orchestrator(DistNode, abc.ABC):
                         PYTORCHJOB_PLURAL,
                         job_name)
             except Exception as excp:
-                self._logger.warning(f'Could not delete: {job_name}. Reason: {excp}')
+                self.__logger.warning(f'Could not delete: {job_name}. Reason: {excp}')
 
-    def _create_config_maps(self, config_maps: Dict[str, V1ConfigMap]) -> None:
+    def __create_config_maps(self, config_maps: Dict[str, V1ConfigMap]):
         """
         Private helper function to generate V1ConfigMap resources that are to be attached to the different trainers.
-        This allows for dynamic deployment with generated configuration files.
+        This allows for dynamic (at least more dynamic) deployment with regenerated configuration files.
         """
         for _, config_map in config_maps.items():
             self._v1.create_namespaced_config_map(self._config.cluster_config.namespace,
                                                   config_map)
-
-    def wait_for_jobs_to_complete(self):
-        """
-        Function to wait for all tasks to complete. This allows to wait for all the resources to free-up after running
-        an experiment. Thereby not letting running e
-        """
-        while len(self.deployed_tasks) > 0:
-            task_to_move = set()
-            for task in self.deployed_tasks:
-                job_status = self._client.get_job_status(name=f"trainjob-{task.id}", namespace='test')
-                if job_status != 'Running':
-                    logging.info(f"{task.id} was completed with status: {job_status}, moving to completed")
-                    task_to_move.add(task)
-                else:
-                    logging.info(f"Waiting for {task.id} to complete")
-
-            self.completed_tasks.update(task_to_move)
-            self.deployed_tasks.difference_update(task_to_move)
-            time.sleep(self.SLEEP_TIME)
-
-
-class SimulatedOrchestrator(Orchestrator):
-    """
-    Orchestrator implementation for Simulated arrivals. Currently, supports only Poisson inter-arrival times.
-    """
-
-    def __init__(self, cluster_mgr: ClusterManager, arrival_generator: ArrivalGenerator, config: DistributedConfig):
-        super().__init__(cluster_mgr, arrival_generator, config)
-
-    def run(self, clear: bool = False, experiment_replication: int = -1) -> None:
-        self._alive = True
-        start_time = time.time()
-        if clear:
-            self._clear_jobs()
-        while self._alive and time.time() - start_time < self._config.get_duration():
-            # 1. Check arrivals
-            # If new arrivals, store them in arrival list
-            while not self._arrival_generator.arrivals.empty():
-                arrival = self._arrival_generator.arrivals.get()
-                task = _generate_task(arrival)
-                self._logger.debug(f"Arrival of: {task}")
-                self.pending_tasks.put(task)
-
-            # Deploy all pending tasks without logic
-            while not self.pending_tasks.empty():
-                curr_task: ArrivalTask = self.pending_tasks.get()
-                self._logger.info(f"Scheduling arrival of Arrival: {curr_task.id}")
-
-                try:
-                    # Create persistent logging information. A these will not be deleted by the Orchestrator, as such, they
-                    # allow you to retrieve information of experiments after removing the PytorchJob after completion.
-                    config_dict, configmap_name_dict = _prepare_experiment_maps(curr_task,
-                                                                                config=self._config,
-                                                                                u_id=curr_task.id,
-                                                                                replication=experiment_replication)
-                    self._create_config_maps(config_dict)
-
-                    job_to_start = construct_job(self._config, curr_task, configmap_name_dict)
-                    self._logger.info(f"Deploying on cluster: {curr_task.id}")
-                    self._client.create(job_to_start, namespace=self._config.cluster_config.namespace)
-                    self.deployed_tasks.add(curr_task)
-                except:
-                    pass
-
-
-            self._logger.info("Still alive...")
-            # Prevent high cpu utilization by sleeping between checks.
-            time.sleep(self.SLEEP_TIME)
-        self.stop()
-        self.wait_for_jobs_to_complete()
-        self._logger.info('Experiment completed.')
-
-
-class BatchOrchestrator(Orchestrator):
-    """
-    Orchestrator implementation to allow for running all experiments that were defined in one go.
-    """
-
-    def __init__(self, cluster_mgr: ClusterManager, arrival_generator: ArrivalGenerator, config: DistributedConfig):
-        super().__init__(cluster_mgr, arrival_generator, config)
-
-    def run(self, clear: bool = False, experiment_replication: int = 1) -> None:
-        """
-        Main loop of the Orchestrator for processing a configuration as a batch, i.e. deploy all-at-once (batch)
-        without any scheduling or simulation applied. This will make use of Kubeflow Training-operators to ensure that
-        pods are created with sufficient resources (depending on resources available on your cluster).
-        @param clear: Boolean indicating whether a previous deployment needs to be cleaned up (i.e. lingering jobs that
-        were deployed by the previous run).
-        @type clear: bool
-        @return: None
-        @rtype: None
-        """
-        self._alive = True
-        start_time = time.time()
-        if clear:
-            self._clear_jobs()
-        while self._alive and time.time() - start_time < self._config.get_duration():
-            # 1. Check arrivals
-            # If new arrivals, store them in arrival list
-            while not self._arrival_generator.arrivals.empty():
-                arrival = self._arrival_generator.arrivals.get()
-                task = _generate_task(arrival)
-                self._logger.debug(f"Arrival of: {task}")
-                self.pending_tasks.put(task)
-
-            while not self.pending_tasks.empty():
-                # Do blocking request to priority queue
-                curr_task: ArrivalTask = self.pending_tasks.get()
-                self._logger.info(f"Scheduling arrival of Arrival: {curr_task.id}")
-
-                # Create persistent logging information. A these will not be deleted by the Orchestrator, as such
-                # allow you to retrieve information of experiments even after removing the PytorchJob after completion.
-                config_dict, configmap_name_dict = _prepare_experiment_maps(curr_task,
-                                                                            config=self._config,
-                                                                            u_id=curr_task.id,
-                                                                            replication=experiment_replication)
-                self._create_config_maps(config_dict)
-
-                job_to_start = construct_job(self._config, curr_task, configmap_name_dict)
-                self._logger.info(f"Deploying on cluster: {curr_task.id}")
-                self._client.create(job_to_start, namespace=self._config.cluster_config.namespace)
-                self.deployed_tasks.add(curr_task)
-
-                # TODO: Extend this logic in your real project, this is only meant for demo purposes
-                # For now we exit the thread after scheduling a single task.
-            self.stop()
-
-            self._logger.debug("Still alive...")
-            time.sleep(self.SLEEP_TIME)
-        self.wait_for_jobs_to_complete()
-        logging.info('Experiment completed, currently does not support waiting.')

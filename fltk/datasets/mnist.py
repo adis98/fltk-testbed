@@ -3,14 +3,10 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets
 from torchvision import transforms
 
-from fltk.datasets.dataset import Dataset
+from .dataset import Dataset
 
 
 class MNIST(Dataset):
-    """
-    MNIST Dataset implementation for Distributed learning experiments.
-    """
-
     DEFAULT_TRANSFORM = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))

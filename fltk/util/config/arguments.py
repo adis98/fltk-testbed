@@ -24,9 +24,9 @@ def _create_client_parser(subparsers) -> None:
     @rtype: None
     """
     client_parser = subparsers.add_parser('client')
-    client_parser.add_argument('experiment_config', type=str, help="Experiment specific config (yaml).")
-    client_parser.add_argument('task_id', type=str, help="Unique identifier for task.")
-    client_parser.add_argument('config', type=str, help="General cluster/orchestrator config (json).")
+    client_parser.add_argument('config', type=str)
+    client_parser.add_argument('task_id', type=str)
+    client_parser.add_argument('experiment_config', type=str)
     # Add parameter parser for backend
     client_parser.add_argument('--backend', type=str, help='Distributed backend',
                                choices=[dist.Backend.GLOO, dist.Backend.NCCL, dist.Backend.MPI],
@@ -126,7 +126,7 @@ def add_default_arguments(*parsers):
         parser.add_argument('--prefix', type=str, default=None)
 
 
-def create_all_subparsers(subparsers):
+def create_all_subparsers(subparsers: ArgumentParser):
     """
     Helper function to add all subparsers to an argparse object.
     @param subparsers: Subparser to add arguments to.

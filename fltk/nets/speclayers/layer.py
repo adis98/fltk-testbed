@@ -56,6 +56,7 @@ class DecomposedConv(nn.Module):
         self.padding = padding
         self.dilation = dilation
         self.transposed = False
+        self.atten = None
         self.output_padding = _pair(0)
         self.groups = groups
         self.padding_mode = padding_mode
@@ -87,27 +88,22 @@ class DecomposedConv(nn.Module):
                             _pair(0), self.dilation, self.groups)
         return F.conv2d(input, weight, self.bias, self.stride,
                         self.padding, self.dilation, self.groups)
-    def set_atten(self,t,dim):
+
+    def set_atten(self, t, dim):
         if t==0:
-            self.atten = Parameter(torch.zeros(dim))
-        else:
             self.atten = Parameter(torch.rand(dim))
-    def set_knlwledge(self,from_kb):
+
+
+    def set_knlwledge(self, from_kb):
         self.from_kb = from_kb
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.from_kb.to(device)
+
     def get_weight(self):
         m = nn.Sigmoid()
         sw = self.sw.transpose(0, -1)
-        # newmask = m(self.mask)
-        # print(sw*newmask)
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        weight = (sw * m(self.mask)).transpose(0, -1) + self.aw + torch.sum(self.atten * (self.from_kb.to(device)), dim=-1)
-        if(device.type != 'cpu'):
-            weight = weight.type(torch.cuda.FloatTensor)
-        else:
-            weight = weight.type(torch.FloatTensor)
+        weight = (sw * m(self.mask)).transpose(0, -1) + self.aw + torch.sum(self.atten * self.from_kb, dim=-1)
+        weight = weight.type(torch.FloatTensor)
         return weight
+
     def forward(self, input):
 
         # newmask = m(self.mask)
@@ -138,27 +134,24 @@ class DecomposedLinear(nn.Module):
             bound = 1 / math.sqrt(fan_in)
             init.uniform_(self.bias, -bound, bound)
             init.uniform_(self.mask, -bound, bound)
+
     def set_atten(self,t,dim):
         if t==0:
             self.atten = Parameter(torch.zeros(dim))
             self.atten.requires_grad=False
         else:
             self.atten = Parameter(torch.rand(dim))
+
     def set_knlwledge(self,from_kb):
         self.from_kb = from_kb
 
     def get_weight(self):
         m = nn.Sigmoid()
         sw = self.sw.transpose(0, -1)
-        # newmask = m(self.mask)
-        # print(sw*newmask)
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        weight = (sw * m(self.mask)).transpose(0, -1) + self.aw + torch.sum(self.atten * self.from_kb.to(device), dim=-1)
-        if(device.type != 'cpu'):
-            weight = weight.type(torch.cuda.FloatTensor)
-        else:
-            weight = weight.type(torch.FloatTensor)
+        weight = (sw * m(self.mask)).transpose(0, -1) + self.aw + torch.sum(self.atten * self.from_kb, dim=-1)
+        weight = weight.type(torch.FloatTensor)
         return weight
+
     def forward(self, input):
         weight = self.get_weight()
         return F.linear(input, weight, self.bias)
